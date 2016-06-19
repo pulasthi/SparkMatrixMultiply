@@ -1,13 +1,15 @@
 package org.pulasthi.sparkmatrixmultiply.computeonly
 
-import java.nio.ByteOrder
+import java.nio.{ByteBuffer, ByteOrder}
 
 import com.google.common.base.Optional
-import edu.indiana.soic.spidal.spark.damds.Constants
+import edu.indiana.soic.spidal.common.{RangePartitioner, Range}
+import edu.indiana.soic.spidal.spark.damds.ParallelOps
 import org.apache.commons.cli._
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.SparkConf
 import org.apache.spark.SparkContext
+import org.apache.spark.rdd.RDD
 import org.pulasthi.sparkmatrixmultiply.configurations.ConfigurationMgr
 import org.pulasthi.sparkmatrixmultiply.configurations.section.DAMDSSection
 import org.pulasthi.sparkmatrixmultiply.damds._
@@ -21,11 +23,12 @@ object Driver {
   var byteOrder: ByteOrder = null;
   var BlockSize: Int = 0;
   var programOptions: Options = new Options();
+  var palalizem : Int = 8
 
   def main(args: Array[String]): Unit ={
     val conf = new SparkConf().setAppName("sparkMDS")
     val sc = new SparkContext(conf)
- 
+
     val parserResult: Optional[CommandLine] = parseCommandLineArguments(args, Driver.programOptions);
 
     if (!parserResult.isPresent) {
@@ -54,8 +57,17 @@ object Driver {
     hdoopconf.set("mapred.min.split.size", ""+blockbtyesize);
     hdoopconf.set("mapred.max.split.size", ""+blockbtyesize);
 
+    val ranges: Array[Range] = RangePartitioner.Partition(0, config.numberDataPoints, 1)
+    ParallelOps.procRowRange = ranges(0);
+    var datardd = sc.binaryRecords(config.distanceMatrixFile,2*config.numberDataPoints,hdoopconf);
+    datardd.repartition(palalizem)
 
-
+    val shortsrdd : RDD[Array[Short]] = datardd.map{ cur =>
+    {
+      val shorts: Array[Short] = Array.ofDim[Short](cur.length/2)
+      ByteBuffer.wrap(cur).asShortBuffer().get(shorts)
+      shorts
+    }}
   }
 
   def readConfigurations(cmd: CommandLine): Unit = {
