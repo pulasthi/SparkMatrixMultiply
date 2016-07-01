@@ -6,13 +6,12 @@ import java.util.Random
 import java.util.regex.Pattern
 
 import com.google.common.base.{Strings, Optional}
-import edu.indiana.soic.spidal.common.{RangePartitioner, Range}
-import edu.indiana.soic.spidal.spark.damds.ParallelOps
+import edu.indiana.soic.spidal.common.{DoubleStatistics, RangePartitioner, Range}
 import org.apache.commons.cli._
 import org.apache.hadoop.conf.Configuration
-import org.apache.spark.SparkConf
-import org.apache.spark.SparkContext
+import org.apache.spark.{Accumulator, SparkConf, SparkContext}
 import org.apache.spark.rdd.RDD
+import org.pulasthi.sparkmatrixmultiply.MatrixUtils
 import org.pulasthi.sparkmatrixmultiply.configurations.ConfigurationMgr
 import org.pulasthi.sparkmatrixmultiply.configurations.section.DAMDSSection
 import org.pulasthi.sparkmatrixmultiply.damds._
@@ -28,9 +27,17 @@ object Driver {
   var byteOrder: ByteOrder = null;
   var BlockSize: Int = 0;
   var programOptions: Options = new Options();
-  var palalizem : Int = 8
+  var palalizem: Int = 8
+  var missingDistCount: Accumulator[Int] = null;
 
-  def main(args: Array[String]): Unit ={
+  def matrixMultiply(preX: Array[Double], targetDimension: Int, globalColCount: Int, blockSize: Int)(iter: Iterator[Array[Short]]) : Iterator[Int] = {
+    var indexRowArray:  Array[Array[Double]] =  Array.ofDim[Double](indexRowArray.length, targetDimension);;
+    val multiplyResult: Array[Double] = Array.ofDim[Double](indexRowArray.length*targetDimension);
+    MatrixUtils.matrixMultiply(indexRowArray, preX, indexRowArray.length, targetDimension, globalColCount, blockSize, multiplyResult);
+    return List(1).iterator;
+  }
+
+  def main(args: Array[String]): Unit = {
     val conf = new SparkConf().setAppName("sparkMDS")
     val sc = new SparkContext(conf)
 
@@ -54,33 +61,37 @@ object Driver {
       new HelpFormatter().printHelp(Constants.ProgramName, Driver.programOptions)
       return
     }
+
     readConfigurations(cmd)
-
     var hdoopconf = new Configuration();
-    var blockpointcount = (math.ceil(config.numberDataPoints.toDouble/palalizem)).toInt
-    var blockbtyesize = blockpointcount*config.numberDataPoints*2;
-    hdoopconf.set("mapred.min.split.size", ""+blockbtyesize);
-    hdoopconf.set("mapred.max.split.size", ""+blockbtyesize);
+    var blockpointcount = (math.ceil(config.numberDataPoints.toDouble / palalizem)).toInt
+    var blockbtyesize = blockpointcount * config.numberDataPoints * 2;
+    hdoopconf.set("mapred.min.split.size", "" + blockbtyesize);
+    hdoopconf.set("mapred.max.split.size", "" + blockbtyesize);
 
-    var preX: Array[Array[Double]] = if (Strings.isNullOrEmpty(config.initialPointsFile))
-      generateInitMapping(config.numberDataPoints, config.targetDimension)
-    else readInitMapping(config.initialPointsFile, config.numberDataPoints, config.targetDimension);
+    var preX: Array[Double] = if (Strings.isNullOrEmpty(config.initialPointsFile))
+      generateInitMapping(config.numberDataPoints)
+    else readInitMapping(config.initialPointsFile, config.numberDataPoints);
 
     val ranges: Array[Range] = RangePartitioner.Partition(0, config.numberDataPoints, 1)
     ParallelOps.procRowRange = ranges(0);
-    var datardd = sc.binaryRecords(config.distanceMatrixFile,2*config.numberDataPoints,hdoopconf);
+    var datardd = sc.binaryRecords(config.distanceMatrixFile, 2 * config.numberDataPoints, hdoopconf);
     datardd.repartition(palalizem)
 
-    val shortsrdd : RDD[Array[Short]] = datardd.map{ cur =>
-    {
-      val shorts: Array[Short] = Array.ofDim[Short](cur.length/2)
+    val shortsrdd: RDD[Array[Short]] = datardd.map { cur => {
+      val shorts: Array[Short] = Array.ofDim[Short](cur.length / 2)
       ByteBuffer.wrap(cur).asShortBuffer().get(shorts)
       shorts
-    }}
-
+    }
+    }
     //TODO : check if we need to replace 0 with min values
 
+    missingDistCount = sc.accumulator(0, "missingDistCount")
+    val distanceSummary: DoubleStatistics = shortsrdd.mapPartitionsWithIndex(calculateStatisticsInternal(missingDistCount)).reduce(combineStatistics);
+    val missingDistPercent = missingDistCount.value / (Math.pow(config.numberDataPoints, 2));
+    println("\nDistance summary... \n" + distanceSummary.toString + "\n  MissingDistPercentage=" + missingDistPercent)
 
+    shortsrdd.mapPartitions(matrixMultiply(preX,config.targetDimension,ParallelOps.globalColCount,config.blockSize)).count();
   }
 
   def readConfigurations(cmd: CommandLine): Unit = {
@@ -125,6 +136,15 @@ object Driver {
     return x;
   }
 
+  def generateInitMapping(numPoints: Int): Array[Double] = {
+    var x: Array[Double] = Array.ofDim[Double](numPoints);
+    val rand: Random = new Random(System.currentTimeMillis)
+    for (i <- 0 until x.length) {
+        x(i) = if (rand.nextBoolean) rand.nextDouble else -rand.nextDouble
+    }
+    return x;
+  }
+
   def readInitMapping(initialPointsFile: String, numPoints: Int, targetDimension: Int): Array[Array[Double]] = {
     try {
       var x: Array[Array[Double]] = Array.ofDim[Double](numPoints, targetDimension);
@@ -146,4 +166,50 @@ object Driver {
       case ex: IOException => throw new RuntimeException(ex)
     }
   }
+
+  def readInitMapping(initialPointsFile: String, numPoints: Int): Array[Double] = {
+    try {
+      var x: Array[Double] = Array.ofDim[Double](numPoints);
+      var line: String = null
+      val pattern: Pattern = Pattern.compile("[\t]")
+      var row: Int = 0
+      for (line <- Source.fromFile(initialPointsFile).getLines()) {
+        if (!Strings.isNullOrEmpty(line)) {
+          val splits: Array[String] = pattern.split(line.trim)
+          for (i <- 0 until splits.length) {
+            x(row) = splits(i).trim.toDouble
+          }
+          row += 1;
+        }
+      }
+      return x;
+    } catch {
+      case ex: IOException => throw new RuntimeException(ex)
+    }
+  }
+
+  def calculateStatisticsInternal(missingDistCount: Accumulator[Int])(index: Int, iter: Iterator[Array[Short]]): Iterator[DoubleStatistics] = {
+
+    var result = List[DoubleStatistics]();
+    var missingDistCounts: Int = 0;
+    val stats: DoubleStatistics = new DoubleStatistics();
+    while (iter.hasNext) {
+      val cur: Array[Short] = iter.next;
+      cur.map(x => (
+        if ((x * 1.0 / Short.MaxValue) < 0)
+          (missingDistCounts += 1)
+        else
+          (stats.accept((x * 1.0 / Short.MaxValue)))))
+    }
+    result.::=(stats);
+    //TODO test missing distance count
+    missingDistCount.add(missingDistCounts)
+    result.iterator
+  }
+
+  def combineStatistics(doubleStatisticsMain: DoubleStatistics, doubleStatisticsOther: DoubleStatistics): DoubleStatistics = {
+    doubleStatisticsMain.combine(doubleStatisticsOther)
+    doubleStatisticsMain
+  }
+
 }
