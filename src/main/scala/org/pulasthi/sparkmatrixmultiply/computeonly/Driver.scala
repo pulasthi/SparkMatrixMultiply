@@ -1,23 +1,14 @@
 package org.pulasthi.sparkmatrixmultiply.computeonly
 
-import java.io.IOException
-import java.nio.{ByteBuffer, ByteOrder}
-import java.util.Random
-import java.util.regex.Pattern
-
-import com.google.common.base.{Strings, Optional}
-import edu.indiana.soic.spidal.common.{DoubleStatistics, RangePartitioner, Range}
+import java.nio.{ByteOrder}
+import java.util.concurrent.TimeUnit
+import com.google.common.base.Stopwatch
 import org.apache.commons.cli._
-import org.apache.hadoop.conf.Configuration
 import org.apache.spark.{Accumulator, SparkConf, SparkContext}
-import org.apache.spark.rdd.RDD
 import org.pulasthi.sparkmatrixmultiply.{MMUtils, MatrixUtils}
-import org.pulasthi.sparkmatrixmultiply.configurations.ConfigurationMgr
 import org.pulasthi.sparkmatrixmultiply.configurations.section.DAMDSSection
 import org.pulasthi.sparkmatrixmultiply.damds._
-import org.saliya.javathreads.damds.ParallelOps
 
-import scala.io.Source
 
 /**
   * Created by pulasthi on 6/19/16.
@@ -26,13 +17,17 @@ object Driver {
 
   var config: DAMDSSection = null;
   var byteOrder: ByteOrder = null;
-  var BlockSize: Int = 0;
+  var BlockSize: Int = 64;
   var programOptions: Options = new Options();
-  var palalizem: Int = 8
   var missingDistCount: Accumulator[Int] = null;
   var targetDimension: Int = 3;
+  var iterationTimer: Stopwatch = Stopwatch.createUnstarted()
+  var iterationTime: Long = 0L;
+  var mainTimer: Stopwatch = Stopwatch.createUnstarted()
 
   def main(args: Array[String]): Unit = {
+
+    mainTimer.start();
     val conf = new SparkConf().setAppName("sparkMDS")
     val sc = new SparkContext(conf)
 
@@ -48,9 +43,12 @@ object Driver {
 
     //create RDD to make parallel calls
     val runRDD = sc.parallelize(1 to parallism, parallism);
+    val rowcount = runRDD.mapPartitionsWithIndex(runTask(globalColCount,targetDimension,taskRowCounts, blockSize, iterations)).count()
+    mainTimer.stop();
 
-    val rowcount = runRDD.mapPartitionsWithIndex(runTask(globalColCount,targetDimension,taskRowCounts,blockSize, iterations)).count()
     println("Total Row Count " + rowcount);
+    println("Total Time " + mainTimer.elapsed(TimeUnit.MILLISECONDS));
+    println("Iteration Time " + iterationTime);
 
   }
 
@@ -76,7 +74,9 @@ object Driver {
     MMUtils.generateBofZ(localRowCount,globalColCount,partialBofZ);
 
     for(i <- 0 until iterations){
+      iterationTimer.start();
       MatrixUtils.matrixMultiply(partialBofZ, preX, partialBofZ.length, targetDimension, globalColCount, blockSize, multiplyResult);
+      iterationTimer
     }
 
     println("Task Index " + index + " Number of Rows " + localRowCount)
