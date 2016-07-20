@@ -45,8 +45,7 @@ object Driver {
     val rowcountEnd = runRDD.mapPartitionsWithIndex(runTask(globalColCount,targetDimension,taskRowCounts, blockSize, iterations)).sum()
     mainTimer.stop();
 
-    println("Total Row Count " + rowcountEnd);
-    println("Total Time " + mainTimer.elapsed(TimeUnit.MILLISECONDS));
+    println("Total Time for col :" + globalColCount + " row " + rowcount + " block size " + blockSize + " : " + mainTimer.elapsed(TimeUnit.MILLISECONDS));
     println("Iteration Time " + iterationTime);
 
   }
