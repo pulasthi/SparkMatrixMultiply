@@ -42,7 +42,9 @@ object Driver {
 
     //create RDD to make parallel calls
     val runRDD = sc.parallelize(1 to parallism, parallism);
-    val rowcountEnd = runRDD.mapPartitionsWithIndex(runTask(globalColCount,targetDimension,taskRowCounts, blockSize, iterations)).sum()
+    for(i <- 0 until iterations){
+      val rowcountEnd = runRDD.mapPartitionsWithIndex(runTask(globalColCount,targetDimension,taskRowCounts, blockSize, iterations)).sum()
+    }
     mainTimer.stop();
 
     println("Total Time for col :" + globalColCount + " row " + rowcount + " block size " + blockSize + " : " + mainTimer.elapsed(TimeUnit.MILLISECONDS));
@@ -71,9 +73,9 @@ object Driver {
     MMUtils.generatePreX(globalColCount,targetDimension,preX);
     MMUtils.generateBofZ(localRowCount,globalColCount,partialBofZ);
 
-    for(i <- 0 until iterations){
+    //for(i <- 0 until iterations){
       MatrixUtils.matrixMultiply(partialBofZ, preX, partialBofZ.length, targetDimension, globalColCount, blockSize, multiplyResult);
-    }
+    //}
 
     println("Task Index " + index + " Number of Rows " + localRowCount)
     return List(localRowCount).iterator;
