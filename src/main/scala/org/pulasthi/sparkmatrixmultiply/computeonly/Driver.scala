@@ -24,6 +24,7 @@ object Driver {
   var mainTimer: Stopwatch = Stopwatch.createUnstarted()
   var parallism: Int = 1;
 
+
   def main(args: Array[String]): Unit = {
 
     mainTimer.start();
@@ -42,12 +43,13 @@ object Driver {
 
     //create RDD to make parallel calls
     val runRDD = sc.parallelize(1 to parallism, parallism);
+    //With matrix results
     for(i <- 0 until iterations){
-      val rowcountEnd = runRDD.mapPartitionsWithIndex(runTask(globalColCount,targetDimension,taskRowCounts, blockSize, iterations)).sum()
+      val multiplyResult = runRDD.mapPartitionsWithIndex(runTaskCollect(globalColCount,targetDimension,taskRowCounts, blockSize, iterations)).reduce(collectResults)
     }
     mainTimer.stop();
 
-    println("Total Time for col :" + globalColCount + " row " + rowcount + " block size " + blockSize + " : " + mainTimer.elapsed(TimeUnit.MILLISECONDS));
+    println("Total Time for col with matrix reduction :" + globalColCount + " row " + rowcount + " block size " + blockSize + " : " + mainTimer.elapsed(TimeUnit.MILLISECONDS));
     println("Iteration Time " + iterationTime);
 
   }
@@ -80,4 +82,26 @@ object Driver {
     println("Task Index " + index + " Number of Rows " + localRowCount)
     return List(localRowCount).iterator;
   }
+
+  def runTaskCollect(globalColCount: Int, targetDimension: Int, taskRowCounts: Array[Int], blockSize: Int, iterations: Int)(index: Int, iter: Iterator[Int]) : Iterator[Array[Double]] = {
+    val localRowCount = taskRowCounts(index);
+    val preX: Array[Double] = Array.ofDim[Double](globalColCount * targetDimension);
+    val partialBofZ: Array[Array[Double]] = Array.ofDim[Double](localRowCount,globalColCount);;
+    val multiplyResult: Array[Double] = Array.ofDim[Double](partialBofZ.length*targetDimension);
+
+    MMUtils.generatePreX(globalColCount,targetDimension,preX);
+    MMUtils.generateBofZ(localRowCount,globalColCount,partialBofZ);
+
+    //for(i <- 0 until iterations){
+    MatrixUtils.matrixMultiply(partialBofZ, preX, partialBofZ.length, targetDimension, globalColCount, blockSize, multiplyResult);
+    //}
+
+    println("Task Index " + index + " Number of Rows " + localRowCount)
+    return List(multiplyResult).iterator;
+  }
+
+  def collectResults(main: Array[Double],next: Array[Double]) : Array[Double] = {
+    return main ++ next;
+  }
+
 }
